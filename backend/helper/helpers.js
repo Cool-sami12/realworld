@@ -1,42 +1,86 @@
+const prisma = require("../prisma/client");
+
 const slugify = (string) => {
   return string.trim().toLowerCase().replace(/\W|_/g, "-");
 };
 
-const appendTagList = (articleTags, article) => {
-  const tagList = articleTags.map((tag) => tag.name);
+const isFollowing = async (followerId, followingId) => {
+  if (!followerId) return false;
 
-  if (!article) return tagList;
-  article.dataValues.tagList = tagList;
+  const follow = await prisma.follow.findUnique({
+    where: { followerId_followingId: { followerId, followingId } },
+  });
+
+  return !!follow;
 };
 
-const appendFavorites = async (loggedUser, article) => {
-  const favorited = await article.hasUser(loggedUser ? loggedUser : null);
-  article.dataValues.favorited = loggedUser ? favorited : false;
+const countFollowers = (followingId) =>
+  prisma.follow.count({ where: { followingId } });
 
-  const favoritesCount = await article.countUsers();
-  article.dataValues.favoritesCount = favoritesCount;
+const isFavorited = async (userId, articleId) => {
+  if (!userId) return false;
+
+  const favorite = await prisma.favorite.findUnique({
+    where: { userId_articleId: { userId, articleId } },
+  });
+
+  return !!favorite;
 };
 
-const appendFollowers = async (loggedUser, toAppend) => {
-  //
-  if (toAppend?.author) {
-    const author = await toAppend.getAuthor();
+const countFavorites = (articleId) =>
+  prisma.favorite.count({ where: { articleId } });
 
-    const following = await author.hasFollower(loggedUser ? loggedUser : null);
-    toAppend.author.dataValues.following = loggedUser ? following : false;
+const buildUser = (user, token) => ({
+  email: user.email,
+  username: user.username,
+  bio: user.bio,
+  image: user.image,
+  token,
+});
 
-    const followersCount = await author.countFollowers();
-    toAppend.author.dataValues.followersCount = followersCount;
-    //
-  } else {
-    const following = await toAppend.hasFollower(
-      loggedUser ? loggedUser : null,
-    );
-    toAppend.dataValues.following = loggedUser ? following : false;
+const buildProfile = async (author, loggedUserId) => ({
+  username: author.username,
+  bio: author.bio,
+  image: author.image,
+  following: await isFollowing(loggedUserId, author.id),
+  followersCount: await countFollowers(author.id),
+});
 
-    const followersCount = await toAppend.countFollowers();
-    toAppend.dataValues.followersCount = followersCount;
-  }
+const getTagList = async (articleId) => {
+  const tagRows = await prisma.articleTag.findMany({ where: { articleId } });
+
+  return tagRows.map((tag) => tag.tagName);
 };
 
-module.exports = { slugify, appendTagList, appendFavorites, appendFollowers };
+const buildArticle = async (article, loggedUserId) => ({
+  slug: article.slug,
+  title: article.title,
+  description: article.description,
+  body: article.body,
+  tagList: await getTagList(article.id),
+  createdAt: article.createdAt,
+  updatedAt: article.updatedAt,
+  favorited: await isFavorited(loggedUserId, article.id),
+  favoritesCount: await countFavorites(article.id),
+  author: await buildProfile(article.author, loggedUserId),
+});
+
+const buildComment = async (comment, loggedUserId) => ({
+  id: comment.id,
+  body: comment.body,
+  createdAt: comment.createdAt,
+  updatedAt: comment.updatedAt,
+  author: await buildProfile(comment.author, loggedUserId),
+});
+
+module.exports = {
+  slugify,
+  isFollowing,
+  countFollowers,
+  isFavorited,
+  countFavorites,
+  buildUser,
+  buildProfile,
+  buildArticle,
+  buildComment,
+};

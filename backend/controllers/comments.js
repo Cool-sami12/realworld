@@ -1,11 +1,11 @@
+const prisma = require("../prisma/client");
 const {
   NotFoundError,
   UnauthorizedError,
   FieldRequiredError,
   ForbiddenError,
 } = require("../helper/customErrors");
-const { appendFollowers } = require("../helper/helpers");
-const { Article, Comment, User } = require("../models");
+const { buildComment } = require("../helper/helpers");
 
 //? All Comments for Article
 const allComments = async (req, res, next) => {
@@ -13,20 +13,20 @@ const allComments = async (req, res, next) => {
     const { loggedUser } = req;
     const { slug } = req.params;
 
-    const article = await Article.findOne({ where: { slug: slug } });
+    const article = await prisma.article.findUnique({ where: { slug } });
     if (!article) throw new NotFoundError("Article");
 
-    const comments = await article.getComments({
-      include: [
-        { model: User, as: "author", attributes: { exclude: ["email"] } },
-      ],
+    const comments = await prisma.comment.findMany({
+      where: { articleId: article.id },
+      include: { author: true },
+      orderBy: { createdAt: "desc" },
     });
 
-    for (const comment of comments) {
-      await appendFollowers(loggedUser, comment);
-    }
-
-    res.json({ comments });
+    res.json({
+      comments: await Promise.all(
+        comments.map((comment) => buildComment(comment, loggedUser?.id)),
+      ),
+    });
   } catch (error) {
     next(error);
   }
@@ -42,20 +42,15 @@ const createComment = async (req, res, next) => {
     if (!body) throw new FieldRequiredError("Comment body");
 
     const { slug } = req.params;
-    const article = await Article.findOne({ where: { slug: slug } });
+    const article = await prisma.article.findUnique({ where: { slug } });
     if (!article) throw new NotFoundError("Article");
 
-    const comment = await Comment.create({
-      body: body,
-      articleId: article.id,
-      userId: loggedUser.id,
+    const comment = await prisma.comment.create({
+      data: { body, articleId: article.id, userId: loggedUser.id },
+      include: { author: true },
     });
 
-    delete loggedUser.dataValues.token;
-    comment.dataValues.author = loggedUser;
-    await appendFollowers(loggedUser, loggedUser);
-
-    res.status(201).json({ comment });
+    res.status(201).json({ comment: await buildComment(comment, loggedUser.id) });
   } catch (error) {
     next(error);
   }
@@ -67,16 +62,18 @@ const deleteComment = async (req, res, next) => {
     const { loggedUser } = req;
     if (!loggedUser) throw new UnauthorizedError();
 
-    const { slug, commentId } = req.params;
+    const { commentId } = req.params;
 
-    const comment = await Comment.findByPk(commentId);
+    const comment = await prisma.comment.findUnique({
+      where: { id: Number(commentId) },
+    });
     if (!comment) throw new NotFoundError("Comment");
 
     if (loggedUser.id !== comment.userId) {
       throw new ForbiddenError("comment");
     }
 
-    await comment.destroy();
+    await prisma.comment.delete({ where: { id: comment.id } });
 
     res.json({ message: { body: ["Comment deleted successfully"] } });
   } catch (error) {

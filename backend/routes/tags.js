@@ -1,16 +1,13 @@
 const express = require("express");
 const router = express.Router();
-const { Tag } = require("../models");
-const { appendTagList } = require("../helper/helpers");
+const prisma = require("../prisma/client");
 
 // All Tags
 router.get("/", async (req, res, next) => {
   try {
-    const tagList = await Tag.findAll();
+    const tags = await prisma.tag.findMany({ orderBy: { name: "asc" } });
 
-    const tags = appendTagList(tagList);
-
-    res.json({ tags });
+    res.json({ tags: tags.map((tag) => tag.name) });
   } catch (error) {
     next(error);
   }

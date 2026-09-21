@@ -1,0 +1,101 @@
+name: qa-e2e
+
+# Runs the Playwright automation suite (API + full browser UI, see e2e/) on every push/PR to
+# main/dev, plus on demand. Deliberately separate from deploy_development.yml / deploy_production.yml
+# — this workflow never touches real infrastructure, it only proves the app works.
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/workflows/github-pages.yml'
+      - '.github/workflows/deploy_*.yml'
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/workflows/github-pages.yml'
+      - '.github/workflows/deploy_*.yml'
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: API + Web automated tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # A fresh, ephemeral Postgres per run — deliberately NOT the Neon dev database used for local
+    # testing. BUG-013 (see BUG-REPORTS.md) documents intermittent Neon cold-start latency; a CI
+    # run has no warm-up period to rely on, so a disposable local Postgres keeps this workflow's
+    # results about the application, not about a shared database's current mood.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: realworld_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/realworld_ci
+      JWT_KEY: ci-only-secret-not-used-anywhere-real
+      PORT: 3001
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply Prisma migrations
+        working-directory: backend
+        run: npx prisma migrate deploy
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Install Playwright's Chromium (+ OS deps)
+        run: npx playwright install --with-deps chromium
+
+      # playwright.config.js's webServer entries start the backend (node index.js) and frontend
+      # (vite) themselves — no separate "start the app" step needed here.
+      - name: Run Playwright suite (api + web projects)
+        run: npx playwright test
+
+      - name: Upload Playwright HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload failure diagnostics (traces, screenshots, videos)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore

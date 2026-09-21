@@ -5,66 +5,41 @@ const {
   NotFoundError,
   UnauthorizedError,
 } = require("../helper/customErrors");
-const {
-  appendFollowers,
-  appendFavorites,
-  appendTagList,
-  slugify,
-} = require("../helper/helpers");
-const { Article, Tag, User } = require("../models");
+const { buildArticle, slugify } = require("../helper/helpers");
+const prisma = require("../prisma/client");
 
-const includeOptions = [
-  { model: Tag, as: "tagList", attributes: ["name"] },
-  { model: User, as: "author", attributes: { exclude: ["email"] } },
-];
+const articleInclude = { author: true };
 
 //? All Articles - by Author/by Tag/Favorited by user
 const allArticles = async (req, res, next) => {
   try {
     const { loggedUser } = req;
-
     const { author, tag, favorited, limit = 3, offset = 0 } = req.query;
-    const searchOptions = {
-      include: [
-        {
-          model: Tag,
-          as: "tagList",
-          attributes: ["name"],
-          ...(tag && { where: { name: tag } }),
-        },
-        {
-          model: User,
-          as: "author",
-          attributes: { exclude: ["email"] },
-          ...(author && { where: { username: author } }),
-        },
-      ],
-      limit: parseInt(limit),
-      offset: offset * limit,
-      order: [["createdAt", "DESC"]],
+
+    const where = {
+      ...(author && { author: { username: author } }),
+      ...(tag && { tagList: { some: { tagName: tag } } }),
+      ...(favorited && {
+        favorites: { some: { user: { username: favorited } } },
+      }),
     };
 
-    let articles = { rows: [], count: 0 };
-    if (favorited) {
-      const user = await User.findOne({ where: { username: favorited } });
+    const [rows, count] = await Promise.all([
+      prisma.article.findMany({
+        where,
+        include: articleInclude,
+        take: parseInt(limit),
+        skip: parseInt(offset) * parseInt(limit),
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.article.count({ where }),
+    ]);
 
-      articles.rows = await user.getFavorites(searchOptions);
-      articles.count = await user.countFavorites();
-    } else {
-      articles = await Article.findAndCountAll(searchOptions);
-    }
+    const articles = await Promise.all(
+      rows.map((article) => buildArticle(article, loggedUser?.id)),
+    );
 
-    for (let article of articles.rows) {
-      const articleTags = await article.getTagList();
-
-      appendTagList(articleTags, article);
-      await appendFollowers(loggedUser, article);
-      await appendFavorites(loggedUser, article);
-
-      delete article.dataValues.Favorites;
-    }
-
-    res.json({ articles: articles.rows, articlesCount: articles.count });
+    res.json({ articles, articlesCount: count });
   } catch (error) {
     next(error);
   }
@@ -76,43 +51,43 @@ const createArticle = async (req, res, next) => {
     const { loggedUser } = req;
     if (!loggedUser) throw new UnauthorizedError();
 
-    const { title, description, body, tagList } = req.body.article;
+    const { title, description, body, tagList = [] } = req.body.article;
     if (!title) throw new FieldRequiredError("A title");
     if (!description) throw new FieldRequiredError("A description");
     if (!body) throw new FieldRequiredError("An article body");
 
     const slug = slugify(title);
-    const slugInDB = await Article.findOne({ where: { slug: slug } });
+    const slugInDB = await prisma.article.findUnique({ where: { slug } });
     if (slugInDB) throw new AlreadyTakenError("Title");
 
-    const article = await Article.create({
-      slug: slug,
-      title: title,
-      description: description,
-      body: body,
+    const tagNames = [
+      ...new Set(
+        tagList.map((tag) => tag.trim()).filter((tag) => tag.length > 2),
+      ),
+    ];
+
+    const article = await prisma.article.create({
+      data: {
+        slug,
+        title,
+        description,
+        body,
+        userId: loggedUser.id,
+        tagList: {
+          create: tagNames.map((tagName) => ({
+            tag: {
+              connectOrCreate: {
+                where: { name: tagName },
+                create: { name: tagName },
+              },
+            },
+          })),
+        },
+      },
+      include: articleInclude,
     });
 
-    for (const tag of tagList) {
-      const tagInDB = await Tag.findByPk(tag.trim());
-
-      if (tagInDB) {
-        await article.addTagList(tagInDB);
-      } else if (tag.length > 2) {
-        const newTag = await Tag.create({ name: tag.trim() });
-
-        await article.addTagList(newTag);
-      }
-    }
-
-    delete loggedUser.dataValues.token;
-
-    article.dataValues.tagList = tagList;
-    article.setAuthor(loggedUser);
-    article.dataValues.author = loggedUser;
-    await appendFollowers(loggedUser, loggedUser);
-    await appendFavorites(loggedUser, article);
-
-    res.status(201).json({ article });
+    res.status(201).json({ article: await buildArticle(article, loggedUser.id) });
   } catch (error) {
     next(error);
   }
@@ -125,25 +100,30 @@ const articlesFeed = async (req, res, next) => {
     if (!loggedUser) throw new UnauthorizedError();
 
     const { limit = 3, offset = 0 } = req.query;
-    const authors = await loggedUser.getFollowing();
 
-    const articles = await Article.findAndCountAll({
-      include: includeOptions,
-      limit: parseInt(limit),
-      offset: offset * limit,
-      order: [["createdAt", "DESC"]],
-      where: { userId: authors.map((author) => author.id) },
+    const following = await prisma.follow.findMany({
+      where: { followerId: loggedUser.id },
+      select: { followingId: true },
     });
+    const authorIds = following.map((follow) => follow.followingId);
+    const where = { userId: { in: authorIds } };
 
-    for (const article of articles.rows) {
-      const articleTags = await article.getTagList();
+    const [rows, count] = await Promise.all([
+      prisma.article.findMany({
+        where,
+        include: articleInclude,
+        take: parseInt(limit),
+        skip: parseInt(offset) * parseInt(limit),
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.article.count({ where }),
+    ]);
 
-      appendTagList(articleTags, article);
-      await appendFollowers(loggedUser, article);
-      await appendFavorites(loggedUser, article);
-    }
+    const articles = await Promise.all(
+      rows.map((article) => buildArticle(article, loggedUser.id)),
+    );
 
-    res.json({ articles: articles.rows, articlesCount: articles.count });
+    res.json({ articles, articlesCount: count });
   } catch (error) {
     next(error);
   }
@@ -155,17 +135,13 @@ const singleArticle = async (req, res, next) => {
     const { loggedUser } = req;
 
     const { slug } = req.params;
-    const article = await Article.findOne({
-      where: { slug: slug },
-      include: includeOptions,
+    const article = await prisma.article.findUnique({
+      where: { slug },
+      include: articleInclude,
     });
     if (!article) throw new NotFoundError("Article");
 
-    appendTagList(article.tagList, article);
-    await appendFollowers(loggedUser, article);
-    await appendFavorites(loggedUser, article);
-
-    res.json({ article });
+    res.json({ article: await buildArticle(article, loggedUser?.id) });
   } catch (error) {
     next(error);
   }
@@ -178,30 +154,32 @@ const updateArticle = async (req, res, next) => {
     if (!loggedUser) throw new UnauthorizedError();
 
     const { slug } = req.params;
-    const article = await Article.findOne({
-      where: { slug: slug },
-      include: includeOptions,
+    const article = await prisma.article.findUnique({
+      where: { slug },
+      include: articleInclude,
     });
     if (!article) throw new NotFoundError("Article");
 
-    if (loggedUser.id !== article.author.id) {
+    if (loggedUser.id !== article.userId) {
       throw new ForbiddenError("article");
     }
 
     const { title, description, body } = req.body.article;
+    const data = {};
     if (title) {
-      article.slug = slugify(title);
-      article.title = title;
+      data.title = title;
+      data.slug = slugify(title);
     }
-    if (description) article.description = description;
-    if (body) article.body = body;
-    await article.save();
+    if (description) data.description = description;
+    if (body) data.body = body;
 
-    appendTagList(article.tagList, article);
-    await appendFollowers(loggedUser, article);
-    await appendFavorites(loggedUser, article);
+    const updatedArticle = await prisma.article.update({
+      where: { id: article.id },
+      data,
+      include: articleInclude,
+    });
 
-    res.json({ article });
+    res.json({ article: await buildArticle(updatedArticle, loggedUser.id) });
   } catch (error) {
     next(error);
   }
@@ -214,17 +192,14 @@ const deleteArticle = async (req, res, next) => {
     if (!loggedUser) throw new UnauthorizedError();
 
     const { slug } = req.params;
-    const article = await Article.findOne({
-      where: { slug: slug },
-      include: includeOptions,
-    });
+    const article = await prisma.article.findUnique({ where: { slug } });
     if (!article) throw new NotFoundError("Article");
 
-    if (loggedUser.id !== article.author.id) {
+    if (loggedUser.id !== article.userId) {
       throw new ForbiddenError("article");
     }
 
-    await article.destroy();
+    await prisma.article.delete({ where: { id: article.id } });
 
     res.json({ message: { body: ["Article deleted successfully"] } });
   } catch (error) {

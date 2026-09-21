@@ -1,6 +1,7 @@
-const { User } = require("../models");
+const prisma = require("../prisma/client");
 const { jwtSign } = require("../helper/jwt");
 const { bcryptHash, bcryptCompare } = require("../helper/bcrypt");
+const { buildUser } = require("../helper/helpers");
 const {
   ValidationError,
   FieldRequiredError,
@@ -16,22 +17,27 @@ const signUp = async (req, res, next) => {
     if (!email) throw new FieldRequiredError(`An email`);
     if (!password) throw new FieldRequiredError(`A password`);
 
-    const userExists = await User.findOne({
-      where: { email: req.body.user.email },
+    const emailExists = await prisma.user.findUnique({ where: { email } });
+    if (emailExists) throw new AlreadyTakenError("Email", "try logging in");
+
+    const usernameExists = await prisma.user.findUnique({
+      where: { username },
     });
-    if (userExists) throw new AlreadyTakenError("Email", "try logging in");
+    if (usernameExists) throw new AlreadyTakenError("Username");
 
-    const newUser = await User.create({
-      email: email,
-      username: username,
-      bio: bio,
-      image: image,
-      password: await bcryptHash(password),
+    const newUser = await prisma.user.create({
+      data: {
+        email,
+        username,
+        bio,
+        image,
+        password: await bcryptHash(password),
+      },
     });
 
-    newUser.dataValues.token = await jwtSign(newUser);
+    const token = await jwtSign(newUser);
 
-    res.status(201).json({ user: newUser });
+    res.status(201).json({ user: buildUser(newUser, token) });
   } catch (error) {
     next(error);
   }
@@ -42,15 +48,17 @@ const signIn = async (req, res, next) => {
   try {
     const { user } = req.body;
 
-    const existentUser = await User.findOne({ where: { email: user.email } });
+    const existentUser = await prisma.user.findUnique({
+      where: { email: user.email },
+    });
     if (!existentUser) throw new NotFoundError("Email", "sign in first");
 
     const pwd = await bcryptCompare(user.password, existentUser.password);
     if (!pwd) throw new ValidationError("Wrong email/password combination");
 
-    existentUser.dataValues.token = await jwtSign(user);
+    const token = await jwtSign(user);
 
-    res.json({ user: existentUser });
+    res.json({ user: buildUser(existentUser, token) });
   } catch (error) {
     next(error);
   }

@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id       Int    @id @default(autoincrement())
+  email    String @unique
+  username String @unique
+  bio      String?
+  image    String?
+  password String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  articles  Article[]
+  comments  Comment[]
+  favorites Favorite[]
+
+  following Follow[] @relation("follower")
+  followers Follow[] @relation("following")
+}
+
+model Article {
+  id          Int    @id @default(autoincrement())
+  slug        String @unique
+  title       String
+  description String
+  body        String
+
+  userId Int
+  author User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  comments  Comment[]
+  favorites Favorite[]
+  tagList   ArticleTag[]
+}
+
+model Comment {
+  id   Int    @id @default(autoincrement())
+  body String
+
+  articleId Int
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  userId Int
+  author User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Tag {
+  name String @id
+
+  articles ArticleTag[]
+}
+
+model ArticleTag {
+  articleId Int
+  tagName   String
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagName], references: [name], onDelete: Cascade)
+
+  @@id([articleId, tagName])
+}
+
+model Favorite {
+  userId    Int
+  articleId Int
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, articleId])
+}
+
+model Follow {
+  followerId  Int
+  followingId Int
+
+  follower  User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followingId])
+}

@@ -1,6 +1,6 @@
 const { NotFoundError } = require("../helper/customErrors");
 const { jwtVerify } = require("../helper/jwt");
-const { User } = require("../models");
+const prisma = require("../prisma/client");
 
 const verifyToken = async (req, res, next) => {
   try {
@@ -13,15 +13,13 @@ const verifyToken = async (req, res, next) => {
     const userVerified = await jwtVerify(token);
     if (!userVerified) throw new Error("Invalid Token");
 
-    req.loggedUser = await User.findOne({
-      attributes: { exclude: ["email"] },
+    const loggedUser = await prisma.user.findUnique({
       where: { email: userVerified.email },
     });
+    if (!loggedUser) next(new NotFoundError("User"));
 
-    if (!req.loggedUser) next(new NotFoundError("User"));
-
-    headers.email = userVerified.email;
-    req.loggedUser.dataValues.token = token;
+    req.loggedUser = loggedUser;
+    req.loggedUser.token = token;
 
     next();
   } catch (error) {

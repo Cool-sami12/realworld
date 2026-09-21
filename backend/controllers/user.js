@@ -1,5 +1,7 @@
+const prisma = require("../prisma/client");
 const { UnauthorizedError } = require("../helper/customErrors");
 const { bcryptHash } = require("../helper/bcrypt");
+const { buildUser } = require("../helper/helpers");
 
 //* Current User
 const currentUser = async (req, res, next) => {
@@ -7,10 +9,7 @@ const currentUser = async (req, res, next) => {
     const { loggedUser } = req;
     if (!loggedUser) throw new UnauthorizedError();
 
-    loggedUser.dataValues.email = req.headers.email;
-    delete req.headers.email;
-
-    res.json({ user: loggedUser });
+    res.json({ user: buildUser(loggedUser, loggedUser.token) });
   } catch (error) {
     next(error);
   }
@@ -27,19 +26,23 @@ const updateUser = async (req, res, next) => {
       user,
     } = req.body;
 
+    const data = {};
     Object.entries(user).forEach((entry) => {
       const [key, value] = entry;
 
-      if (value !== undefined && key !== "password") loggedUser[key] = value;
+      if (value !== undefined && key !== "password") data[key] = value;
     });
 
     if (password !== undefined || password !== "") {
-      loggedUser.password = await bcryptHash(password);
+      data.password = await bcryptHash(password);
     }
 
-    await loggedUser.save();
+    const updatedUser = await prisma.user.update({
+      where: { id: loggedUser.id },
+      data,
+    });
 
-    res.json({ user: loggedUser });
+    res.json({ user: buildUser(updatedUser, loggedUser.token) });
   } catch (error) {
     next(error);
   }

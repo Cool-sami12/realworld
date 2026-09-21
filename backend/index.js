@@ -4,7 +4,7 @@ const PORT = process.env.PORT || 3001;
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { sequelize } = require("./models");
+const prisma = require("./prisma/client");
 const errorHandler = require("./middleware/errorHandler");
 
 const usersRoutes = require("./routes/users");
@@ -19,7 +19,7 @@ app.use(express.json());
 
 (async () => {
   try {
-    await sequelize.sync({ alter: true });
+    await prisma.$connect();
     console.log(`Connection with ${env} database has been established.`);
   } catch (error) {
     console.error("Unable to connect to the database:", error);

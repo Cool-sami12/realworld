@@ -23,6 +23,14 @@ const errorHandler = (error, req, res, next) => {
   } else if (error instanceof ValidationError) {
     console.log(error);
     res.status(422).json({ errors: { body: [error.message] } });
+  } else if (error.code === "P2002") {
+    console.log(error);
+    res
+      .status(422)
+      .json({ errors: { body: [`${error.meta?.target?.join(", ")} already exists`] } });
+  } else if (error.code === "P2025") {
+    console.log(error);
+    res.status(404).json({ errors: { body: ["Not found"] } });
   } else {
     console.log(error);
     res.status(500).json({ errors: { body: [error.message] } });

@@ -1,6 +1,6 @@
+const prisma = require("../prisma/client");
 const { UnauthorizedError, NotFoundError } = require("../helper/customErrors");
-const { appendFollowers } = require("../helper/helpers");
-const { User } = require("../models");
+const { buildProfile } = require("../helper/helpers");
 
 //? Profile
 const getProfile = async (req, res, next) => {
@@ -8,15 +8,12 @@ const getProfile = async (req, res, next) => {
     const { loggedUser } = req;
     const { username } = req.params;
 
-    const profile = await User.findOne({
-      where: { username: username },
-      attributes: { exclude: "email" },
-    });
+    const profile = await prisma.user.findUnique({ where: { username } });
     if (!profile) throw new NotFoundError("User profile");
 
-    await appendFollowers(loggedUser, profile);
-
-    res.json({ profile });
+    res.json({
+      profile: { ...(await buildProfile(profile, loggedUser?.id)), email: profile.email },
+    });
   } catch (error) {
     next(error);
   }
@@ -30,21 +27,29 @@ const followToggler = async (req, res, next) => {
 
     const { username } = req.params;
 
-    const profile = await User.findOne({
-      where: { username: username },
-      attributes: { exclude: "email" },
-    });
+    const profile = await prisma.user.findUnique({ where: { username } });
     if (!profile) throw new NotFoundError("User profile");
 
     if (req.method === "POST") {
-      await profile.addFollower(loggedUser);
+      await prisma.follow.upsert({
+        where: {
+          followerId_followingId: {
+            followerId: loggedUser.id,
+            followingId: profile.id,
+          },
+        },
+        create: { followerId: loggedUser.id, followingId: profile.id },
+        update: {},
+      });
     } else if (req.method === "DELETE") {
-      await profile.removeFollower(loggedUser);
+      await prisma.follow.deleteMany({
+        where: { followerId: loggedUser.id, followingId: profile.id },
+      });
     }
 
-    await appendFollowers(loggedUser, profile);
-
-    res.json({ profile });
+    res.json({
+      profile: { ...(await buildProfile(profile, loggedUser.id)), email: profile.email },
+    });
   } catch (error) {
     next(error);
   }
